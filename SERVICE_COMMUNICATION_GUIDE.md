@@ -25,6 +25,18 @@ Ngoài ra, hệ thống có:
 - `/api/Products` → Gateway định tuyến tới **ProductService**.
 - `/api/Policies` → Gateway định tuyến tới **PolicyService**.
 
+**Ví dụ cấu hình route trong `ocelot.json`:**
+```json
+{
+  "DownstreamPathTemplate": "/api/Products",
+  "DownstreamScheme": "http",
+  "UpstreamPathTemplate": "/api/Products",
+  "ServiceName": "ProductService",
+  "UpstreamHttpMethod": ["Get"],
+  "FileCacheOptions": { "TtlSeconds": 15 }
+}
+```
+
 ### 2.2 Cache tại API Gateway
 - Gateway dùng **Ocelot CacheManager** với in-memory dictionary handle.
 - Một số route GET có `FileCacheOptions` TTL 15s trong `ocelot.json`.
@@ -34,6 +46,12 @@ Ngoài ra, hệ thống có:
 - **Use case:** Khi tạo offer/policy, PolicyService cần tính giá.
 - **Cách hoạt động:** PolicyService gọi HTTP REST sang PricingService.
 - **Ý nghĩa:** Đây là giao tiếp đồng bộ, PolicyService chờ kết quả giá trả về.
+
+**Ví dụ minh hoạ (pseudo-code trong PolicyService):**
+```csharp
+// PolicyService gọi PricingService để lấy giá
+var price = await pricingClient.CalculatePrice(request);
+```
 
 ### 3.2 Các service nhận request từ Gateway
 - **ProductService**: cung cấp danh sách sản phẩm.
@@ -48,9 +66,24 @@ Ngoài ra, hệ thống có:
 - Khi policy được tạo, PolicyService **publish event** lên RabbitMQ.
 - Event này được các service khác lắng nghe để cập nhật dữ liệu đọc (read model).
 
+**Ví dụ minh hoạ publish event (pseudo-code):**
+```csharp
+// PolicyService publish event khi tạo policy thành công
+await bus.PublishAsync(new PolicyCreatedEvent { PolicyNumber = policy.Number });
+```
+
 ### 4.2 PolicySearchService subscribe event
 - PolicySearchService **subscribe** các event từ PolicyService.
 - Nó chuyển đổi dữ liệu và index vào **Elasticsearch** để hỗ trợ tìm kiếm nhanh.
+
+**Ví dụ minh hoạ subscribe event (pseudo-code):**
+```csharp
+// PolicySearchService nhận event và index vào Elasticsearch
+bus.SubscribeAsync<PolicyCreatedEvent>("policy-search", async message =>
+{
+    await elasticClient.IndexAsync(message);
+});
+```
 
 ### 4.3 DashboardService subscribe event
 - DashboardService cũng **subscribe** các event bán policy.
@@ -62,6 +95,20 @@ Ngoài ra, hệ thống có:
 - Mỗi service đăng ký với Eureka khi khởi động.
 - API Gateway dùng Eureka để tìm địa chỉ service thực tế.
 - Khi service scale hoặc đổi địa chỉ, Gateway vẫn có thể tìm service qua Eureka.
+
+**Ví dụ config Eureka (appsettings.docker.json):**
+```json
+{
+  "Eureka": {
+    "Client": {
+      "ServiceUrl": "http://eureka-server:8761/eureka/"
+    },
+    "Instance": {
+      "HostName": "dotnet-policy-service"
+    }
+  }
+}
+```
 
 ## 6. Luồng nghiệp vụ mẫu (end-to-end)
 ### 6.1 Tạo offer và policy
@@ -90,4 +137,3 @@ Ngoài ra, hệ thống có:
 - **RabbitMQ async**: dùng để broadcast sự kiện, cập nhật search & dashboard.
 - **Elasticsearch**: lưu read model cho search và analytics.
 - **Eureka**: quản lý service discovery.
-

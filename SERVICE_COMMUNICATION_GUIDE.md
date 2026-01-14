@@ -412,7 +412,61 @@ s.AddOcelot().AddEureka().AddCacheManager(x => x.WithDictionaryHandle());
 }
 ```
 
-### 12.3. ProductService: đăng ký EF Core theo cấu hình (EFInstaller)
+### 12.3. Gateway Program.cs (đoạn cấu hình hoàn chỉnh)
+```csharp
+return WebHost.CreateDefaultBuilder(args)
+    .ConfigureAppConfiguration((hostingContext, config) =>
+    {
+        config
+            .SetBasePath(hostingContext.HostingEnvironment.ContentRootPath)
+            .AddJsonFile("appsettings.json", true, true)
+            .AddJsonFile($"appsettings.{hostingContext.HostingEnvironment.EnvironmentName}.json", true, true)
+            .AddJsonFile("ocelot.json", false, false)
+            .AddJsonFile($"ocelot.{hostingContext.HostingEnvironment.EnvironmentName}.json", true, true)
+            .AddEnvironmentVariables();
+    })
+    .ConfigureServices(s =>
+    {
+        s.AddCors();
+        s.AddAuthentication(x =>
+            {
+                x.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                x.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+            })
+            .AddJwtBearer("ApiSecurity", x =>
+            {
+                x.RequireHttpsMetadata = false;
+                x.SaveToken = true;
+                x.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(key),
+                    ValidateIssuer = false,
+                    ValidateAudience = false
+                };
+            });
+        s.AddOcelot().AddEureka().AddCacheManager(x => x.WithDictionaryHandle());
+    })
+    .Configure(a =>
+    {
+        var appSettings = new AppSettings();
+        a.ApplicationServices.GetService<IConfiguration>()
+            .GetSection("AppSettings")
+            .Bind(appSettings);
+
+        a.UseCors
+        (b => b
+            .WithOrigins(appSettings.AllowedChatOrigins)
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials()
+        );
+        a.UseOcelot().Wait();
+    })
+    .Build();
+```
+
+### 12.4. ProductService: đăng ký EF Core theo cấu hình (EFInstaller)
 ```csharp
 public static IServiceCollection AddEFConfiguration(this IServiceCollection services, IConfiguration configuration)
 {
@@ -426,41 +480,142 @@ public static IServiceCollection AddEFConfiguration(this IServiceCollection serv
             options.UseSqlServer(configuration.GetConnectionString("Products"));
     });
 
+    services.AddScoped<IProductRepository, ProductRepository>();
     return services;
 }
 ```
 
-### 12.4. ProductService: sử dụng EF Core trong repository
+### 12.5. ProductService: DbContext đầy đủ (ProductDbContext)
 ```csharp
-public async Task AddAsync(Product product)
+public class ProductDbContext : DbContext
 {
-    await productDbContext.Products.AddAsync(product);
-    await productDbContext.SaveChangesAsync();
+    public ProductDbContext(DbContextOptions<ProductDbContext> options) : base(options)
+    {
+    }
+
+    public DbSet<Product> Products { get; set; }
+    public DbSet<Question> Questions { get; set; }
+    public DbSet<Cover> Covers { get; set; }
+    public DbSet<Choice> Choices { get; set; }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        optionsBuilder.EnableSensitiveDataLogging();
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfiguration(new ProductConfig());
+        modelBuilder.ApplyConfiguration(new QuestionConfig());
+        modelBuilder.ApplyConfiguration(new ChoiceQuestionConfig());
+        modelBuilder.ApplyConfiguration(new ChoiceConfig());
+    }
 }
 ```
 
-### 12.5. PolicyService: đăng ký NHibernate (Startup)
+### 12.6. ProductService: sử dụng EF Core trong repository (đầy đủ)
 ```csharp
-services.AddNHibernate(Configuration.GetConnectionString("DefaultConnection"));
+public async Task<Product> Add(Product product)
+{
+    await productDbContext.Products.AddAsync(product);
+    return product;
+}
+
+public async Task<List<Product>> FindAllActive()
+{
+    return await productDbContext
+        .Products
+        .Include(c => c.Covers)
+        .Include("Questions.Choices")
+        .Where(p => p.Status == ProductStatus.Active)
+        .ToListAsync();
+}
+
+public async Task<Product> FindOne(string productCode)
+{
+    return await productDbContext
+        .Products
+        .Include(c => c.Covers)
+        .Include("Questions.Choices")
+        .FirstOrDefaultAsync(p => p.Code.Equals(productCode, StringComparison.InvariantCultureIgnoreCase));
+}
+
+public async Task<Product> FindById(Guid id)
+{
+    return await productDbContext.Products.Include(c => c.Covers).Include("Questions.Choices")
+        .FirstOrDefaultAsync(p => p.Id == id);
+}
 ```
 
-### 12.6. PricingService: đăng ký Marten (Startup)
+### 12.7. PolicyService: Startup cấu hình đầy đủ (NHibernate + Rabbit + Pricing client)
 ```csharp
-services.AddMarten(Configuration.GetConnectionString("DefaultConnection"));
+public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDiscoveryClient(Configuration);
+    services.AddMvc()
+        .AddNewtonsoftJson();
+    services.AddMediatR(opts => opts.RegisterServicesFromAssemblyContaining<Startup>());
+    services.AddPricingRestClient();
+    services.AddNHibernate(Configuration.GetConnectionString("DefaultConnection"));
+    services.AddRabbitListeners();
+    services.AddSwaggerGen();
+}
 ```
 
-### 12.7. PolicySearchService: đăng ký Elasticsearch client (Startup)
+### 12.8. PricingService: Startup cấu hình đầy đủ (Marten + init)
 ```csharp
-services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
+public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDiscoveryClient(Configuration);
+    services.AddControllers()
+        .AddNewtonsoftJson(opt => { opt.SerializerSettings.TypeNameHandling = TypeNameHandling.Auto; });
+
+    services.AddMarten(Configuration.GetConnectionString("DefaultConnection"));
+    services.AddPricingDemoInitializer();
+    services.AddMediatR(options => options.RegisterServicesFromAssemblyContaining<Program>());
+    services.AddLoggingBehavior();
+    services.AddSwaggerGen();
+}
 ```
 
-### 12.8. DashboardService: đăng ký Elasticsearch client (Startup)
+### 12.9. PolicySearchService: Startup cấu hình đầy đủ (Elastic + Rabbit)
 ```csharp
-services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
-services.AddSingleton<IPolicyRepository, ElasticPolicyRepository>();
+public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDiscoveryClient(Configuration);
+    services.AddMvc()
+        .AddNewtonsoftJson();
+    services.AddMediatR(opts => opts.RegisterServicesFromAssemblyContaining<Startup>());
+    services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
+    services.AddRabbitListeners();
+    services.AddSwaggerGen();
+}
 ```
 
-### 12.9. PaymentService: cấu hình Hangfire dùng PostgreSQL
+### 12.10. DashboardService: Startup cấu hình đầy đủ (Elastic + Rabbit)
 ```csharp
-config.UsePostgreSqlStorage(jobsConfig.HangfireConnectionStringName);
+public void ConfigureServices(IServiceCollection services)
+{
+    services.AddDiscoveryClient(Configuration);
+    services.AddMvc()
+        .AddNewtonsoftJson();
+    services.AddMediatR(opts => opts.RegisterServicesFromAssemblyContaining<Startup>());
+    services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
+    services.AddSingleton<IPolicyRepository, ElasticPolicyRepository>();
+    services.AddRabbitListeners(Configuration.GetSection("RabbitMqOptions").Get<RabbitMqOptions>());
+    services.AddInitialSalesData();
+    services.AddSwaggerGen();
+}
+```
+
+### 12.11. PaymentService: cấu hình Hangfire dùng PostgreSQL (JobsInstaller)
+```csharp
+services.AddHangfire(config =>
+{
+    config.UsePostgreSqlStorage(jobsConfig.HangfireConnectionStringName);
+    config.UseLogProvider(new ColouredConsoleLogProvider());
+});
+services.AddScoped<InPaymentRegistrationJob, InPaymentRegistrationJob>();
+services.AddHangfireServer();
+return services;
 ```

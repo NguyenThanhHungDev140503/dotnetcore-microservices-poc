@@ -385,3 +385,82 @@ public class PolicyCreatedSubscriber
 
 > Nếu bạn cần thêm ví dụ cụ thể từ code thật trong project (class, method, hoặc file cụ thể), hãy yêu cầu và mình sẽ trích xuất trực tiếp từ repo.
 
+---
+
+## 12. Ví dụ code *thật* từ repo (trích trực tiếp)
+
+> Các đoạn dưới đây được trích từ code hiện có để bạn đối chiếu với mô tả ở trên.
+
+### 12.1. Gateway: bật Ocelot + Eureka + CacheManager (Program.cs)
+```csharp
+s.AddOcelot().AddEureka().AddCacheManager(x => x.WithDictionaryHandle());
+```
+
+### 12.2. Gateway route + cache TTL (ocelot.json)
+```json
+{
+  "DownstreamPathTemplate": "/api/Products",
+  "DownstreamScheme": "http",
+  "UpstreamPathTemplate": "/api/Products",
+  "ServiceName": "ProductService",
+  "UpstreamHttpMethod": [
+    "Get"
+  ],
+  "FileCacheOptions": {
+    "TtlSeconds": 15
+  }
+}
+```
+
+### 12.3. ProductService: đăng ký EF Core theo cấu hình (EFInstaller)
+```csharp
+public static IServiceCollection AddEFConfiguration(this IServiceCollection services, IConfiguration configuration)
+{
+    var useInMemoryDatabase = configuration.GetSection("Settings").GetValue<bool>("UseInMemoryDatabase");
+
+    services.AddDbContext<ProductDbContext>(options =>
+    {
+        if (useInMemoryDatabase)
+            options.UseInMemoryDatabase("Products");
+        else
+            options.UseSqlServer(configuration.GetConnectionString("Products"));
+    });
+
+    return services;
+}
+```
+
+### 12.4. ProductService: sử dụng EF Core trong repository
+```csharp
+public async Task AddAsync(Product product)
+{
+    await productDbContext.Products.AddAsync(product);
+    await productDbContext.SaveChangesAsync();
+}
+```
+
+### 12.5. PolicyService: đăng ký NHibernate (Startup)
+```csharp
+services.AddNHibernate(Configuration.GetConnectionString("DefaultConnection"));
+```
+
+### 12.6. PricingService: đăng ký Marten (Startup)
+```csharp
+services.AddMarten(Configuration.GetConnectionString("DefaultConnection"));
+```
+
+### 12.7. PolicySearchService: đăng ký Elasticsearch client (Startup)
+```csharp
+services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
+```
+
+### 12.8. DashboardService: đăng ký Elasticsearch client (Startup)
+```csharp
+services.AddElasticSearch(Configuration.GetConnectionString("ElasticSearchConnection"));
+services.AddSingleton<IPolicyRepository, ElasticPolicyRepository>();
+```
+
+### 12.9. PaymentService: cấu hình Hangfire dùng PostgreSQL
+```csharp
+config.UsePostgreSqlStorage(jobsConfig.HangfireConnectionStringName);
+```
